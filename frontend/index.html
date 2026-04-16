@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AI 客服</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #f0f2f5;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      height: 100vh;
+    }
+
+    .chat-container {
+      width: 420px;
+      height: 620px;
+      background: #fff;
+      border-radius: 16px;
+      box-shadow: 0 4px 24px rgba(0,0,0,0.12);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    .chat-header {
+      background: #1a73e8;
+      color: #fff;
+      padding: 16px 20px;
+      font-size: 16px;
+      font-weight: 600;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .chat-header .dot {
+      width: 10px; height: 10px;
+      background: #4cff91;
+      border-radius: 50%;
+    }
+
+    .messages {
+      flex: 1;
+      overflow-y: auto;
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .message {
+      max-width: 80%;
+      padding: 10px 14px;
+      border-radius: 16px;
+      font-size: 14px;
+      line-height: 1.5;
+      white-space: pre-wrap;
+    }
+
+    .message.user {
+      background: #1a73e8;
+      color: #fff;
+      align-self: flex-end;
+      border-bottom-right-radius: 4px;
+    }
+
+    .message.assistant {
+      background: #f1f3f4;
+      color: #333;
+      align-self: flex-start;
+      border-bottom-left-radius: 4px;
+    }
+
+    .message.assistant .source {
+      margin-top: 6px;
+      font-size: 11px;
+      color: #888;
+    }
+
+    .message.typing {
+      background: #f1f3f4;
+      align-self: flex-start;
+      padding: 12px 16px;
+    }
+
+    .typing-dots span {
+      display: inline-block;
+      width: 6px; height: 6px;
+      background: #999;
+      border-radius: 50%;
+      animation: bounce 1.2s infinite;
+      margin: 0 2px;
+    }
+    .typing-dots span:nth-child(2) { animation-delay: 0.2s; }
+    .typing-dots span:nth-child(3) { animation-delay: 0.4s; }
+
+    @keyframes bounce {
+      0%, 60%, 100% { transform: translateY(0); }
+      30% { transform: translateY(-6px); }
+    }
+
+    .input-area {
+      padding: 12px 16px;
+      border-top: 1px solid #e0e0e0;
+      display: flex;
+      gap: 8px;
+      align-items: flex-end;
+    }
+
+    textarea {
+      flex: 1;
+      border: 1px solid #e0e0e0;
+      border-radius: 20px;
+      padding: 10px 14px;
+      font-size: 14px;
+      font-family: inherit;
+      resize: none;
+      outline: none;
+      max-height: 100px;
+      line-height: 1.4;
+    }
+
+    textarea:focus { border-color: #1a73e8; }
+
+    button {
+      background: #1a73e8;
+      color: #fff;
+      border: none;
+      border-radius: 50%;
+      width: 40px; height: 40px;
+      font-size: 18px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+    }
+
+    button:disabled { background: #c0c0c0; cursor: not-allowed; }
+  </style>
+</head>
+<body>
+<div class="chat-container">
+  <div class="chat-header">
+    <div class="dot"></div>
+    AI 客服助理
+  </div>
+  <div class="messages" id="messages">
+    <div class="message assistant">你好！我是 AI 客服助理，有什麼我可以幫助你的嗎？</div>
+  </div>
+  <div class="input-area">
+    <textarea id="input" rows="1" placeholder="輸入問題..."></textarea>
+    <button id="sendBtn" onclick="sendMessage()">&#9658;</button>
+  </div>
+</div>
+
+<script>
+  const API_URL = "http://localhost:8000";
+  let history = [];
+
+  const input = document.getElementById("input");
+  const messagesEl = document.getElementById("messages");
+  const sendBtn = document.getElementById("sendBtn");
+
+  // Enter 送出，Shift+Enter 換行
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
+      e.preventDefault();
+      sendMessage();
+    }
+  });
+
+  // 自動調整 textarea 高度
+  input.addEventListener("input", () => {
+    input.style.height = "auto";
+    input.style.height = input.scrollHeight + "px";
+  });
+
+  function appendMessage(role, content, sources = []) {
+    const div = document.createElement("div");
+    div.className = `message ${role}`;
+    div.textContent = content;
+    if (sources.length > 0) {
+      const src = document.createElement("div");
+      src.className = "source";
+      src.textContent = "來源：" + sources.join(", ");
+      div.appendChild(src);
+    }
+    messagesEl.appendChild(div);
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+    return div;
+  }
+
+  function appendTyping() {
+    const div = document.createElement("div");
+    div.className = "message typing";
+    div.innerHTML = '<div class="typing-dots"><span></span><span></span><span></span></div>';
+    messagesEl.appendChild(div);
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+    return div;
+  }
+
+  async function sendMessage() {
+    const text = input.value.trim();
+    if (!text || sendBtn.disabled) return;
+
+    input.value = "";
+    input.dispatchEvent(new Event("input")); // 觸發高度重置
+    sendBtn.disabled = true;
+
+    appendMessage("user", text);
+    const typing = appendTyping();
+
+    try {
+      const res = await fetch(`${API_URL}/chat`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message: text, history }),
+      });
+
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+
+      typing.remove();
+      appendMessage("assistant", data.answer, data.sources);
+
+      // 更新對話歷史
+      history.push({ role: "user", content: text });
+      history.push({ role: "assistant", content: data.answer });
+    } catch (err) {
+      typing.remove();
+      appendMessage("assistant", "抱歉，連線發生錯誤，請稍後再試。");
+      console.error(err);
+    } finally {
+      sendBtn.disabled = false;
+      input.focus();
+    }
+  }
+</script>
+</body>
+</html>
