@@ -9,7 +9,7 @@ AI 客服 API — FastAPI + pgvector + Gemini
 import os
 from pathlib import Path
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import psycopg2
@@ -22,13 +22,16 @@ from google.genai import types
 # Docker 環境下這些值會由 docker-compose.yml 的 environment 傳入
 load_dotenv(Path(__file__).parent.parent / ".env")
 
-DATABASE_URL  = os.environ["DATABASE_URL"]   # PostgreSQL 連線字串
-GEMINI_API_KEY = os.environ["GEMINI_API_KEY"] # Gemini API 金鑰
+DATABASE_URL   = os.environ["DATABASE_URL"]
+GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
+ADMIN_API_KEY  = os.environ["ADMIN_API_KEY"]  # 管理 API 的保護金鑰
 
 # ── 模型設定 ──────────────────────────────────────────────────────────────────
-EMBED_MODEL = "gemini-embedding-001"  # 將文字轉成向量用的模型（3072 維）
-CHAT_MODEL  = "gemini-2.5-flash-lite" # 負責理解問題並生成回答的語言模型
-TOP_K = 5  # 向量搜尋時取最相似的前 5 筆資料
+EMBED_MODEL  = "gemini-embedding-001"
+CHAT_MODEL   = "gemini-2.5-flash-lite"
+TOP_K        = 5
+CHUNK_SIZE   = 400
+CHUNK_OVERLAP = 50
 
 # ── 初始化 Gemini 客戶端 ───────────────────────────────────────────────────────
 client = genai.Client(api_key=GEMINI_API_KEY)
@@ -75,9 +78,28 @@ class ChatRequest(BaseModel):
 
 
 class ChatResponse(BaseModel):
-    """回傳給前端的格式"""
-    answer: str        # AI 的回答
-    sources: list[str] # 這次回答參考了哪些文件（方便 debug）
+    answer: str
+    sources: list[str]
+
+
+# ── 管理 API 的資料結構 ────────────────────────────────────────────────────────
+
+class IngestRequest(BaseModel):
+    source: str   # 文件名稱，例如 "faq.txt"
+    content: str  # 文件內容
+
+class IngestResponse(BaseModel):
+    source: str
+    chunks_inserted: int
+
+class DocumentItem(BaseModel):
+    id: int
+    source: str
+    content_preview: str  # 只回傳前 100 字，避免回應太大
+
+class DocumentsResponse(BaseModel):
+    documents: list[DocumentItem]
+    total: int
 
 
 # ── 工具函數 ───────────────────────────────────────────────────────────────────
@@ -87,6 +109,35 @@ def get_db():
     conn = psycopg2.connect(DATABASE_URL)
     register_vector(conn)  # 讓 psycopg2 認識 vector 型別
     return conn
+
+
+def verify_admin(x_admin_key: str = Header(...)):
+    """管理端點的 API Key 驗證"""
+    if x_admin_key != ADMIN_API_KEY:
+        raise HTTPException(status_code=401, detail="Invalid admin key")
+
+
+def chunk_text(text: str) -> list[str]:
+    """將長文字切成有重疊的小塊，提升向量搜尋準確度"""
+    words = text.split()
+    chunks, start = [], 0
+    while start < len(words):
+        end = min(start + CHUNK_SIZE, len(words))
+        chunks.append(" ".join(words[start:end]))
+        if end == len(words):
+            break
+        start += CHUNK_SIZE - CHUNK_OVERLAP
+    return chunks
+
+
+def embed_document(text: str) -> list[float]:
+    """將文件文字轉成向量（ingest 用）"""
+    result = client.models.embed_content(
+        model=EMBED_MODEL,
+        contents=text,
+        config=types.EmbedContentConfig(task_type="retrieval_document"),
+    )
+    return result.embeddings[0].values or []
 
 
 def embed(text: str) -> list[float]:
@@ -190,8 +241,94 @@ def build_contents(history: list[Message], context: str, question: str):
 
 @app.get("/health")
 def health():
-    """健康檢查，確認服務是否正常運行"""
     return {"status": "ok"}
+
+
+# ── 管理 API（需要 X-Admin-Key header）────────────────────────────────────────
+
+@app.post("/admin/ingest", response_model=IngestResponse)
+def admin_ingest(req: IngestRequest, x_admin_key: str = Header(...)):
+    """
+    上傳文件內容到知識庫。
+    同名來源會先刪除再重建，方便更新單一文件而不影響其他資料。
+    """
+    verify_admin(x_admin_key)
+
+    chunks = chunk_text(req.content)
+    if not chunks:
+        raise HTTPException(status_code=400, detail="content 不可為空")
+
+    conn = get_db()
+    cur = conn.cursor()
+
+    # 刪除同名來源的舊資料，讓更新同一份文件不會產生重複
+    cur.execute("DELETE FROM documents WHERE source = %s", (req.source,))
+
+    for chunk in chunks:
+        embedding = embed_document(chunk)
+        cur.execute(
+            "INSERT INTO documents (content, source, embedding) VALUES (%s, %s, %s)",
+            (chunk, req.source, embedding),
+        )
+
+    conn.commit()
+    cur.close()
+    conn.close()
+
+    return IngestResponse(source=req.source, chunks_inserted=len(chunks))
+
+
+@app.get("/admin/documents", response_model=DocumentsResponse)
+def admin_list_documents(x_admin_key: str = Header(...)):
+    """列出目前知識庫的所有文件"""
+    verify_admin(x_admin_key)
+
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("SELECT id, source, content FROM documents ORDER BY source, id")
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+
+    docs = [
+        DocumentItem(id=r[0], source=r[1], content_preview=r[2][:100])
+        for r in rows
+    ]
+    return DocumentsResponse(documents=docs, total=len(docs))
+
+
+@app.delete("/admin/documents/{doc_id}")
+def admin_delete_document(doc_id: int, x_admin_key: str = Header(...)):
+    """刪除單一文件 chunk"""
+    verify_admin(x_admin_key)
+
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM documents WHERE id = %s RETURNING id", (doc_id,))
+    deleted = cur.fetchone()
+    conn.commit()
+    cur.close()
+    conn.close()
+
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Document not found")
+    return {"deleted_id": doc_id}
+
+
+@app.delete("/admin/sources/{source}")
+def admin_delete_source(source: str, x_admin_key: str = Header(...)):
+    """刪除某個來源的所有 chunks（例如整份 faq.txt）"""
+    verify_admin(x_admin_key)
+
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM documents WHERE source = %s RETURNING id", (source,))
+    deleted = cur.fetchall()
+    conn.commit()
+    cur.close()
+    conn.close()
+
+    return {"source": source, "deleted_count": len(deleted)}
 
 
 @app.post("/chat", response_model=ChatResponse)
