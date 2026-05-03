@@ -7,6 +7,7 @@ AI 客服 API — FastAPI + pgvector + Gemini
 """
 
 import os
+import httpx
 from pathlib import Path
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Header
@@ -22,9 +23,11 @@ from google.genai import types
 # Docker 環境下這些值會由 docker-compose.yml 的 environment 傳入
 load_dotenv(Path(__file__).parent.parent / ".env")
 
-DATABASE_URL   = os.environ["DATABASE_URL"]
-GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
-ADMIN_API_KEY  = os.environ["ADMIN_API_KEY"]  # 管理 API 的保護金鑰
+DATABASE_URL        = os.environ["DATABASE_URL"]
+GEMINI_API_KEY      = os.environ["GEMINI_API_KEY"]
+ADMIN_API_KEY       = os.environ["ADMIN_API_KEY"]
+TELEGRAM_BOT_TOKEN  = os.environ["TELEGRAM_BOT_TOKEN"]
+TELEGRAM_API        = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
 
 # ── 模型設定 ──────────────────────────────────────────────────────────────────
 EMBED_MODEL  = "gemini-embedding-001"
@@ -370,3 +373,49 @@ def chat(req: ChatRequest):
     answer = response.text or ""
 
     return ChatResponse(answer=answer, sources=sources)
+
+
+# ── Telegram Bot ───────────────────────────────────────────────────────────────
+
+def send_telegram_message(chat_id: int, text: str):
+    """呼叫 Telegram API 把訊息傳給使用者"""
+    with httpx.Client() as client_http:
+        client_http.post(
+            f"{TELEGRAM_API}/sendMessage",
+            json={"chat_id": chat_id, "text": text},
+        )
+
+
+@app.post("/telegram/webhook")
+def telegram_webhook(payload: dict):
+    """
+    Telegram 把使用者訊息轉發到這個端點。
+    取出問題 → 走 RAG 流程 → 回傳答案給使用者。
+    """
+    message = payload.get("message", {})
+    chat_id = message.get("chat", {}).get("id")
+    text = message.get("text", "").strip()
+
+    # 忽略沒有文字的訊息（例如貼圖、圖片）
+    if not chat_id or not text:
+        return {"ok": True}
+
+    # 走既有的 RAG 流程
+    docs = retrieve(text)
+    if not docs:
+        send_telegram_message(chat_id, "抱歉，目前知識庫還沒有相關資料，請聯繫人工客服協助您。")
+        return {"ok": True}
+
+    context = "\n\n".join(f"[來源: {d['source']}]\n{d['content']}" for d in docs)
+    contents = build_contents([], context, text)
+    response = client.models.generate_content(
+        model=CHAT_MODEL,
+        contents=contents,
+        config=types.GenerateContentConfig(
+            system_instruction=SYSTEM_PROMPT,
+            temperature=0.3,
+        ),
+    )
+    answer = response.text or "抱歉，發生錯誤，請稍後再試。"
+    send_telegram_message(chat_id, answer)
+    return {"ok": True}
