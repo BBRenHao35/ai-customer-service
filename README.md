@@ -3,7 +3,7 @@
 基於 RAG（Retrieval-Augmented Generation）架構的 AI 客服系統。
 使用者提問 → 從知識庫找相關資料 → 交給 AI 生成回答。
 
-**Live Demo：** https://BBRenHao35.github.io/ai-customer-service/
+**Live Demo：** https://BBRenHao35.github.io/ai-customer-service/  
 **Telegram Bot：** [@renhao_ai_cs_bot](https://t.me/renhao_ai_cs_bot)
 
 ## 畫面截圖
@@ -32,7 +32,7 @@
       ▼                        ▼ POST /telegram/webhook
 ┌─────────────────────┐   ┌──────────────────────────────┐
 │     GitHub Pages    │   │   GCP Cloud Run (FastAPI)    │
-│   (靜態前端介面)     │──▶│                              │
+│   (Static Frontend) │──▶│                              │
 │                     │   │  1. embed()                  │
 │                     │   │     -> Gemini Embedding API  │
 │                     │   │  2. pgvector search -> Top 5 │
@@ -110,6 +110,8 @@ ai-customer-service/
 2. 在 SQL Editor 執行 `init.sql`
 3. 取得 Session Pooler 的連線字串作為 `DATABASE_URL`
 
+---
+
 ### 後端：GCP Cloud Run
 
 設定好 `.env` 後，直接執行 deploy 腳本（build → push → deploy 一步完成）：
@@ -120,9 +122,13 @@ ai-customer-service/
 
 腳本會從 `.env` 讀取所有環境變數並以 YAML 檔方式傳給 gcloud，避免特殊字元解析問題（參見踩過的坑 #3）。
 
+---
+
 ### 前端：GitHub Pages
 
 repo → Settings → Pages → Branch: `main`, Folder: `/docs`
+
+---
 
 ### Telegram Bot
 
@@ -133,6 +139,8 @@ repo → Settings → Pages → Branch: `main`, Folder: `/docs`
 ```bash
 curl "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/setWebhook?url=https://your-cloud-run-url/telegram/webhook"
 ```
+
+---
 
 ### 知識庫初始化
 
