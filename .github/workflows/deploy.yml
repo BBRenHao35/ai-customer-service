@@ -8,6 +8,7 @@ env:
   PROJECT_ID: renhao-dev
   REGION: asia-east1
   IMAGE: asia-east1-docker.pkg.dev/renhao-dev/ai-customer-service/api
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   deploy:
