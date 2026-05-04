@@ -3,6 +3,8 @@
 基於 RAG（Retrieval-Augmented Generation）架構的 AI 客服系統。
 使用者提問 → 從知識庫找相關資料 → 交給 AI 生成回答。
 
+[![Deploy](https://github.com/BBRenHao35/ai-customer-service/actions/workflows/deploy.yml/badge.svg)](https://github.com/BBRenHao35/ai-customer-service/actions/workflows/deploy.yml)
+
 **Live Demo：** https://BBRenHao35.github.io/ai-customer-service/  
 **Telegram Bot：** [@renhao_ai_cs_bot](https://t.me/renhao_ai_cs_bot)
 
@@ -26,35 +28,69 @@
 
 ## 架構
 
-```
-使用者瀏覽器              Telegram 使用者
-      │                        │
-      ▼                        ▼ POST /telegram/webhook
-┌─────────────────────┐   ┌──────────────────────────────┐
-│     GitHub Pages    │   │   GCP Cloud Run (FastAPI)    │
-│   (Static Frontend) │──▶│                              │
-│                     │   │  1. embed()                  │
-│                     │   │     -> Gemini Embedding API  │
-│                     │   │  2. pgvector search -> Top 5 │
-│                     │   │  3. build prompt             │
-│                     │   │  4. Gemini Chat API          │
-│                     │   │     -> gemini-2.5-flash-lite │
-│       Render        │◀──│  5. return answer + sources  │
-└─────────────────────┘   └──────────────┬───────────────┘
-                                         │
-                                         ▼
-                          ┌──────────────────────────────┐
-                          │   Supabase (PostgreSQL)      │
-                          │   + pgvector extension       │
-                          │   content / source /         │
-                          │   embedding (3072 維)        │
-                          └──────────────────────────────┘
+### 系統架構（使用者端）
 
-[知識庫管理 API，需 X-Admin-Key]
-POST   /admin/ingest              → 上傳文件，自動切塊向量化存入 DB
-GET    /admin/documents           → 列出目前所有知識庫內容
-DELETE /admin/documents/{id}      → 刪除單一 chunk
-DELETE /admin/sources/{source}    → 刪除整份文件的所有 chunks
+```
+Browser User              Telegram User
+      |                        |
+      v                        v  POST /telegram/webhook
++---------------------+   +------------------------------+
+|    GitHub Pages     |   |   GCP Cloud Run (FastAPI)    |
+|  (Static Frontend)  |-->|                              |
+|                     |   |  1. embed()                  |
+|                     |   |     -> Gemini Embedding API  |
+|                     |   |  2. pgvector search -> Top 5 |
+|                     |   |  3. build prompt             |
+|                     |   |  4. Gemini Chat API          |
+|                     |   |     -> gemini-2.5-flash-lite |
+|       Render        |<--|  5. return answer + sources  |
++---------------------+   +---------------+--------------+
+                                           |
+                                           v
+                          +------------------------------+
+                          |   Supabase (PostgreSQL)      |
+                          |   + pgvector extension       |
+                          |   content / source /         |
+                          |   embedding (3072 dims)      |
+                          +------------------------------+
+
+[Admin API, requires X-Admin-Key header]
+POST   /admin/ingest              -> upload doc, chunk, embed, store
+GET    /admin/documents           -> list all chunks
+DELETE /admin/documents/{id}      -> delete single chunk
+DELETE /admin/sources/{source}    -> delete all chunks of a doc
+```
+
+### 部署流程（CI/CD）
+
+```
+git push to main
+      |
+      v
++------------------------------+
+|   GitHub Actions Runner      |
+|   (ubuntu, disposable VM)    |
+|                              |
+|  1. checkout code            |
+|  2. auth -> GCP              |
+|  3. docker build             |
+|     --platform linux/amd64   |
+|     tag: latest              |
+|     tag: <commit-sha>        |
+|  4. docker push              |
+|     -> Artifact Registry     |
+|  5. gcloud run deploy        |
+|     image: <commit-sha>      |
+|     env: GitHub Secrets      |
++----------+-------------------+
+           |
+           v
++------------------------------+
+|   GCP Artifact Registry      |   +------------------------------+
+|   asia-east1                 |   |   GCP Cloud Run              |
+|   image:latest               +-->|   pull new image             |
+|   image:<commit-sha>         |   |   zero-downtime update       |
++------------------------------+   +------------------------------+
 ```
 
 ## 使用工具
@@ -68,6 +104,8 @@ DELETE /admin/sources/{source}    → 刪除整份文件的所有 chunks
 | **Gemini API** | Google AI，負責文字向量化（embedding）與對話生成 |
 | **GitHub Pages** | 靜態前端託管 |
 | **Docker** | 容器化，建立 Cloud Run 部署用的 image |
+| **GitHub Actions** | CI/CD pipeline，push to main 自動 build + deploy |
+| **GCP Artifact Registry** | 存放 Docker image，每次部署以 commit sha 為 tag |
 | **Telegram Bot API** | Telegram 訊息接收與回傳（webhook 模式） |
 
 ## 專案結構
@@ -77,6 +115,10 @@ ai-customer-service/
 ├── docker-compose.yml       # 本地開發用（postgres + api）
 ├── init.sql                 # 資料庫初始化 SQL
 ├── .env.example             # 環境變數範本
+│
+├── .github/
+│   └── workflows/
+│       └── deploy.yml       # CI/CD：push to main → 自動 build + deploy
 │
 ├── api/                     # 後端服務
 │   ├── Dockerfile           # Cloud Run 部署用的 image
@@ -114,7 +156,9 @@ ai-customer-service/
 
 ### 後端：GCP Cloud Run
 
-設定好 `.env` 後，直接執行 deploy 腳本（build → push → deploy 一步完成）：
+**自動部署（推薦）**：push 到 `main` branch 後，GitHub Actions 會自動執行 build → push → deploy，無需手動操作。前提是已在 GitHub repo Settings 設定以下 Secrets：`GCP_SA_KEY`、`GEMINI_API_KEY`、`DATABASE_URL`、`ADMIN_API_KEY`、`TELEGRAM_BOT_TOKEN`。
+
+**手動部署（備用）**：設定好 `.env` 後執行：
 
 ```bash
 ./deploy.sh
