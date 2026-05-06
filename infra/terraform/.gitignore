@@ -1,0 +1,10 @@
+# 下載的 provider 插件（很大，不需要進 git）
+.terraform/
+
+# State 檔案（含有你所有 GCP 資源的詳細設定，可能有機密）
+terraform.tfstate
+terraform.tfstate.backup
+
+# 實際的變數值（含有 API key 等機密）
+*.tfvars
+!*.tfvars.example
