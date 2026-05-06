@@ -106,6 +106,7 @@ git push to main
 | **Docker** | 容器化，建立 Cloud Run 部署用的 image |
 | **GitHub Actions** | CI/CD pipeline，push to main 自動 build + deploy |
 | **GCP Artifact Registry** | 存放 Docker image，每次部署以 commit sha 為 tag |
+| **Terraform** | Infrastructure as Code，用程式碼定義並管理 GCP 資源 |
 | **Telegram Bot API** | Telegram 訊息接收與回傳（webhook 模式） |
 
 ## 專案結構
@@ -119,6 +120,13 @@ ai-customer-service/
 ├── .github/
 │   └── workflows/
 │       └── deploy.yml       # CI/CD：push to main → 自動 build + deploy
+│
+├── infra/
+│   └── terraform/
+│       ├── main.tf                  # GCP 資源定義（Cloud Run、Artifact Registry、IAM）
+│       ├── variables.tf             # 變數宣告
+│       ├── terraform.tfvars.example # 環境變數範本（進 git）
+│       └── terraform.tfvars         # 實際變數值，含 API key（不進 git）
 │
 ├── api/                     # 後端服務
 │   ├── Dockerfile           # Cloud Run 部署用的 image
@@ -165,6 +173,77 @@ ai-customer-service/
 ```
 
 腳本會從 `.env` 讀取所有環境變數並以 YAML 檔方式傳給 gcloud，避免特殊字元解析問題（參見踩過的坑 #3）。
+
+---
+
+### 基礎設施：Terraform (IaC)
+
+**Terraform 是什麼？**
+Infrastructure as Code（IaC）的工具。簡單說：不用手動在 GCP Console 點設定，而是把「GCP 應該長什麼樣子」寫在 `.tf` 檔案裡，Terraform 負責讓現實跟檔案一致。
+
+好處是設定有版本控制（在 git 裡），可以 review，也可以在任何時候重建一模一樣的環境。
+
+**Terraform 管理的資源：**
+- `google_cloud_run_v2_service` — Cloud Run 服務本體（image、env vars、記憶體等）
+- `google_artifact_registry_repository` — 存放 Docker image 的倉庫
+- `google_service_account` — GitHub Actions 用來 deploy 的 service account
+- `google_project_iam_member` — service account 的 GCP 權限綁定
+- `google_cloud_run_v2_service_iam_member` — 讓所有人可以呼叫 Cloud Run（公開存取）
+
+**首次設定：**
+
+```bash
+cd infra/terraform
+cp terraform.tfvars.example terraform.tfvars
+# 編輯 terraform.tfvars，填入真實的 API key 等值
+
+terraform init    # 下載 Google provider 插件（只需跑一次）
+```
+
+**日常使用（改設定的標準流程）：**
+
+```bash
+# 1. 修改 main.tf 或 terraform.tfvars
+# 2. 先 plan，確認會改什麼（不會真的動 GCP）
+terraform plan
+
+# 3. 確認內容符合預期，才真正執行
+terraform apply
+```
+
+**常見的 Cloud Run 設定修改方式：**
+
+修改 env var（例如換 API key）：
+```hcl
+# terraform.tfvars
+gemini_api_key = "new-key-here"
+```
+
+調整記憶體或 CPU：
+```hcl
+# main.tf，在 containers {} 裡加
+resources {
+  limits = {
+    memory = "512Mi"
+    cpu    = "1"
+  }
+}
+```
+
+設定最多幾個 instance（控制費用）：
+```hcl
+# main.tf，在 template {} 裡加
+scaling {
+  max_instance_count = 3
+}
+```
+
+改完後都是同樣的流程：`terraform plan` 確認 → `terraform apply` 執行。
+
+**注意事項：**
+- `terraform.tfvars` 含有真實 API key，已加入 `.gitignore`，絕對不能 push 到 git
+- `terraform.tfstate` 是 Terraform 的狀態檔，同樣不進 git（內含所有資源設定，可能有機密）
+- `.terraform.lock.hcl` 是 provider 版本鎖定檔，**要進 git**（類似 `package-lock.json`）
 
 ---
 
@@ -257,7 +336,11 @@ M 系列 Mac 預設 build 出 ARM image，Cloud Run 需要 `linux/amd64`。
 `.env` 裡用 `SUPABASE_DB_URL`，但程式讀的是 `DATABASE_URL`，造成 Cloud Run 拿到空值。
 解法：統一命名，或在 `.env` 同時保留兩個 key。
 
-**5. Telegram webhook 設定只需執行一次**
+**5. Terraform import：現有資源要先拉進 state**
+Terraform 只管理「它自己建立的」或「透過 import 認識的」資源。如果 GCP 上的資源是手動建的，直接寫 `.tf` 然後 apply，Terraform 會嘗試新建同名資源 → GCP 報錯已存在。
+解法：先跑 `terraform import <resource_type>.<name> "<gcp_resource_id>"`，讓 Terraform 把現有資源讀進 state，之後就能正常 plan / apply 管理。
+
+**6. Telegram webhook 設定只需執行一次**
 `setWebhook` 是一次性設定，不需要每次 deploy 重跑。但 URL 變更（例如換 Cloud Run service 名稱）時需要重設。
 
 ## 日後擴充方向
