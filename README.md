@@ -178,6 +178,24 @@ ai-customer-service/
 | `ADMIN_API_KEY` | 管理 API 的保護金鑰（自訂） |
 | `TELEGRAM_BOT_TOKEN` | BotFather 建立 bot 後取得 |
 
+## 本地開發
+
+```bash
+# 1. 複製環境變數範本
+cp .env.example .env
+# 編輯 .env，至少填入 GEMINI_API_KEY
+
+# 2. 啟動本地服務（postgres + pgvector + fastapi）
+docker-compose up
+
+# API 在 http://localhost:8000
+# 變更 api/ 底下的程式碼會自動 reload（volumes + --reload）
+```
+
+本地用的是 docker-compose 內建的 postgres，不需要連 Supabase。
+
+---
+
 ## 部署架構說明
 
 ### 資料庫：Supabase
@@ -190,7 +208,43 @@ ai-customer-service/
 
 ### 後端：GCP Cloud Run
 
-**自動部署（推薦）**：push 到 `main` branch 後，GitHub Actions 會自動執行 build → push → deploy，無需手動操作。前提是已在 GitHub repo Settings 設定以下 Secrets：`GCP_SA_KEY`、`GEMINI_API_KEY`、`DATABASE_URL`、`ADMIN_API_KEY`、`TELEGRAM_BOT_TOKEN`。
+**自動部署（推薦）**：push 到 `main` branch 後，GitHub Actions 會自動執行 build → push → deploy，無需手動操作。
+
+初次設定需建立 GCP Service Account 並將金鑰存入 GitHub Secrets：
+
+```bash
+# 建立 Service Account
+gcloud iam service-accounts create github-actions \
+  --project=YOUR_PROJECT_ID \
+  --display-name="GitHub Actions Deploy"
+
+# 授予必要權限
+gcloud projects add-iam-policy-binding YOUR_PROJECT_ID \
+  --member="serviceAccount:github-actions@YOUR_PROJECT_ID.iam.gserviceaccount.com" \
+  --role="roles/run.admin"
+
+gcloud projects add-iam-policy-binding YOUR_PROJECT_ID \
+  --member="serviceAccount:github-actions@YOUR_PROJECT_ID.iam.gserviceaccount.com" \
+  --role="roles/artifactregistry.writer"
+
+gcloud projects add-iam-policy-binding YOUR_PROJECT_ID \
+  --member="serviceAccount:github-actions@YOUR_PROJECT_ID.iam.gserviceaccount.com" \
+  --role="roles/iam.serviceAccountUser"
+
+# 下載 JSON 金鑰
+gcloud iam service-accounts keys create /tmp/key.json \
+  --iam-account=github-actions@YOUR_PROJECT_ID.iam.gserviceaccount.com
+```
+
+然後在 GitHub repo → Settings → Secrets and variables → Actions 新增：
+
+| Secret 名稱 | 值 |
+|---|---|
+| `GCP_SA_KEY` | `/tmp/key.json` 的完整 JSON 內容 |
+| `GEMINI_API_KEY` | Google AI Studio 的 API key |
+| `DATABASE_URL` | Supabase 連線字串 |
+| `ADMIN_API_KEY` | 自訂管理金鑰 |
+| `TELEGRAM_BOT_TOKEN` | BotFather 取得的 token |
 
 **手動部署（備用）**：設定好 `.env` 後執行：
 
@@ -219,6 +273,9 @@ Infrastructure as Code（IaC）的工具。簡單說：不用手動在 GCP Conso
 **首次設定：**
 
 ```bash
+# 前置：登入 GCP（讓 Terraform 能操作 GCP 資源）
+gcloud auth application-default login
+
 cd infra/terraform
 cp terraform.tfvars.example terraform.tfvars
 # 編輯 terraform.tfvars，填入真實的 API key 等值
