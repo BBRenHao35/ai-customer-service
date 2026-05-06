@@ -93,6 +93,32 @@ git push to main
 +------------------------------+   +------------------------------+
 ```
 
+### 基礎設施分層（Terraform vs GitHub Actions）
+
+```
++-------------------------+      +-------------------------+
+| Infrastructure Layer    |      | Deployment Layer        |
+| (Terraform)             |      | (GitHub Actions)        |
+|                         |      |                         |
+| 管「資源存在與設定」      |      | 管「哪個版本被部署」     |
+|  - Cloud Run service    |      |  - git push 觸發        |
+|  - Artifact Registry    |      |  - build image          |
+|  - Service Account      |      |  - push to Registry     |
+|  - IAM 權限             |      |  - deploy to Cloud Run  |
+|                         |      |                         |
+| 手動執行：              |      | 自動執行：              |
+| terraform plan → apply  |      | 每次 push to main       |
++----------+--------------+      +----------+--------------+
+           |                                |
+           v                                v
++--------------------------------------------------+
+|              GCP Project: renhao-dev             |
+|    Cloud Run  +  Artifact Registry  +  IAM       |
++--------------------------------------------------+
+```
+
+兩個工具職責不同、互不衝突：Terraform 定義「這個 Cloud Run service 應該存在，記憶體 512MB，開放公開存取」；GitHub Actions 決定「這次 push 的 image 被部署上去」。改設定走 Terraform，改程式碼走 GitHub Actions。
+
 ## 使用工具
 
 | 工具 | 用途 |
